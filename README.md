@@ -479,7 +479,7 @@ echo $ENDPOINT_HTTP_GW_CLUSTER2
 echo $ENDPOINT_HTTPS_GW_CLUSTER2
 ```
 
-## Lab 3 - Deploy the Bookinfo demo app <a name="Lab-3-gw"></a>
+## Lab 3 - Deploy the Bookinfo demo app <a name="Lab-3"></a>
 
 We're going to deploy the bookinfo application to demonstrate several features of Istio and Gloo Mesh.
 
@@ -3141,7 +3141,7 @@ EOF
 ```
 If you refresh the browser where the `@solo.io` user is logged in, we should be able to access the `/get` endpoint as well as any path with the prefix `/anything`. Try and access `/anything/foo` for example - it should work.
 
-## Lab 3 - Apply rate limiting to the Gateway <a name="Lab-3"></a>
+## Lab 3 - Apply rate limiting to the Gateway <a name="Lab-3-gw"></a>
 In this step, we're going to apply rate limiting to the Gateway to only allow 3 requests per minute for the users of the `solo.io` organization.
 
 First, we need to create a `RateLimitClientConfig` object to define the descriptors:
