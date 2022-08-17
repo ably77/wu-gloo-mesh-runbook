@@ -459,6 +459,16 @@ export ENDPOINT_HTTPS_GW_CLUSTER2=$(kubectl --context ${CLUSTER2} -n istio-gatew
 export HOST_GW_CLUSTER2=$(echo ${ENDPOINT_HTTP_GW_CLUSTER2} | cut -d: -f1)
 ```
 
+Let's make sure that all of the variables are discovered correctly:
+```
+echo $ENDPOINT_HTTP_GW_CLUSTER1
+echo $ENDPOINT_HTTPS_GW_CLUSTER1
+echo $HOST_GW_CLUSTER1
+echo $HOST_GW_CLUSTER2
+echo $ENDPOINT_HTTP_GW_CLUSTER2
+echo $ENDPOINT_HTTPS_GW_CLUSTER2
+```
+
 ## Lab 3 - Deploy the Bookinfo demo app <a name="Lab-3"></a>
 
 We're going to deploy the bookinfo application to demonstrate several features of Istio and Gloo Mesh.
