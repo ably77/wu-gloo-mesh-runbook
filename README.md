@@ -107,7 +107,7 @@ export CLUSTER1=cluster1
 export CLUSTER2=cluster2
 ```
 
-You also need to rename the Kubernete contexts of each Kubernetes cluster to match `mgmt`, `cluster1`, ...
+You also need to rename the Kubernetes contexts of each Kubernetes cluster to match `mgmt`, `cluster1`, ...
 
 Here is an example showing how to rename a Kubernetes context:
 
@@ -150,7 +150,9 @@ kubectl --context ${CLUSTER1} create ns istio-system
 kubectl --context ${CLUSTER1} create ns istio-gateways
 ```
 
-Now, let's deploy the Istio control plane on the first cluster:
+Now, let's deploy the Istio control plane on the first cluster.
+Note that we set the `trust domain` to be the same as the cluster name and we configure the sidecars to send their metrics and access logs to the Gloo Mesh agent:
+
 
 ```bash
 helm --kube-context=${CLUSTER1} upgrade --install istio-base ./istio-1.13.4/manifests/charts/base -n istio-system
@@ -189,7 +191,7 @@ pilot:
 EOF
 ```
 
-After that, you can deploy the gateway(s):
+After that, you can deploy the gateways:
 
 ```bash
 kubectl --context ${CLUSTER1} label namespace istio-gateways istio.io/rev=1-13
@@ -287,11 +289,9 @@ gateways:
 EOF
 ```
 
-As you can see, we deploy the control plane (istiod) in the `istio-system` and gateway(s) in the `istio-gateways` namespace.
+As you can see, we deploy the control plane (istiod) in the `istio-system` namespace and gateways in the `istio-gateways` namespace.
 
 One gateway will be used for ingress traffic while the other one will be used for cross cluster communications. It's not mandatory to use separate gateways, but it's a best practice.
-
-Note that we set the `trust domain` to be the same as the cluster name and we configure the sidecars to send their metrics and access logs to the Gloo Mesh agent.
 
 Run the following command until all the Istio Pods are ready:
 
@@ -679,7 +679,7 @@ spec:
 EOF
 ```
 
-You can check that the app is running using
+You can check that the app is running using:
 
 ```
 kubectl --context ${CLUSTER1} -n httpbin get pods
@@ -1249,11 +1249,11 @@ This diagram shows the flow of the request (through the Istio Ingress Gateway):
 
 Let's explore weighted destinations and how we can use them to demonstrate basic functionality of canary deployments. Leveraging weighted destinations, we can start to build up foundations of progressive delivery techniques
 
-Take note that our current deployment does not have any weights defined. This will result in a round-robin behavior across the existing reviews services in cluster1. You will notice that v1 (no stars) and v2 (black stars) reviews services. 
+Take note that our current deployment does not have any weights defined. This will result in a round-robin behavior across the existing reviews services in cluster1. You will notice the v1 (no stars) and v2 (black stars) reviews services.
 
 Let's assume that the v2 reviews service is a newly developed application. Round robin in this case may not be desirable in this situation since we may still be testing the functionality of the "new" v2 service in our cluster. A good strategy we can leverage to carefully release the v2 service is canary/progressive delivery.
 
-Here we will create a new RouteTable that will allow us to define weights for our reviews service so that I can control the flow of traffic to each subset. Let's start by setting 100% of the weight to the v1 service. 
+Here we will create a new RouteTable that will allow us to define weights for our reviews service so that we can control the flow of traffic to each subset. Let's start by setting 100% of the weight to the v1 service.
 
 ```bash
 kubectl --context ${CLUSTER1} apply -f - <<EOF
@@ -1402,7 +1402,7 @@ kubectl --context ${CLUSTER1} -n bookinfo-backends delete routetable reviews
 
 We're going to use Gloo Mesh policies to inject faults and configure timeouts.
 
-Let's create the following `FaultInjectionPolicy` to inject a delay when the `v2` version of the `reviews` service talk to the `ratings` service:
+Let's create the following `FaultInjectionPolicy` to inject a delay when the `v2` version of the `reviews` service talks to the `ratings` service:
 
 ```bash
 cat << EOF | kubectl --context ${CLUSTER1} apply -f -
@@ -1539,7 +1539,7 @@ kubectl --context ${CLUSTER1} -n bookinfo-backends delete routetable reviews
 
 ## Lab 10 - Create the Root Trust Policy <a name="Lab-10"></a>
 
-To allow secured (end-to-end mTLS) cross cluster communications, we need to make sure the certificates issued by the Istio control plance on each cluster are signed with intermediate certificates which have a common root CA.
+To allow secured (end-to-end mTLS) cross cluster communications, we need to make sure the certificates issued by the Istio control plane on each cluster are signed with intermediate certificates which have a common root CA.
 
 Gloo Mesh fully automates this process.
 
@@ -2020,7 +2020,7 @@ spec:
 EOF
 ```
 
-Note that we have added the label `expose` with the value `true` to make sure it will be exported to the Gateway ̀̀`Workspace`.
+Note that we have added the label `expose` with the value `true` to make sure it will be exported to the Gateway `Workspace`.
 
 After that, we need to update the `RouteTable` to use it.
 
@@ -2263,8 +2263,7 @@ kubectl --context ${CLUSTER1} -n bookinfo-frontends delete outlierdetectionpolic
 ## Lab 14 - Deploy sleep containers for zero-trust lab <a name="Lab-14"></a>
 If you do not have ephemeral containers feature flag turned on, we can replace the functionality with the sleep demo app
 
-Run the following commands to deploy the sleep app on `cluster1` twice
-
+Run the following commands to deploy the sleep app on `cluster1` twice.
 The first version will be called `sleep-not-in-mesh` and won't have the sidecar injected (because we don't label the namespace).
 ```bash
 kubectl --context ${CLUSTER1} create ns sleep
@@ -2433,7 +2432,7 @@ kubectl get AuthorizationPolicy -A --context ${CLUSTER1}
 kubectl get Sidecars -A --context ${CLUSTER1}
 ```
 
-When running these commands you should see an output that says `No resources found`. This is expected
+When running these commands you should see an output that says `No resources found`. This is expected.
 
 Now we'll leverage the Gloo Mesh workspaces to get to a state where:
 
