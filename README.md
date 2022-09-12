@@ -1513,8 +1513,6 @@ spec:
               namespace: bookinfo-backends
             port:
               number: 9080
-            subset:
-              version: v2
 EOF
 ```
 
@@ -2384,7 +2382,7 @@ EOF
 
 ## Lab 14 - Zero trust <a name="Lab-14"></a>
 
-In the previous step, we federated multiple meshes and established a shared root CA for a shared identity domain.
+In a previous step, we federated multiple meshes and established a shared root CA for a shared identity domain.
 
 All the communications between Pods in the mesh are now encrypted by default, but:
 
