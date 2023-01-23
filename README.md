@@ -696,7 +696,7 @@ not-in-mesh-5c64bb49cd-m9kwm   1/1     Running   0          11s
 First of all, let's install the `meshctl` CLI:
 
 ```bash
-export GLOO_MESH_VERSION=v2.1.3
+export GLOO_MESH_VERSION=v2.2.0
 curl -sL https://run.solo.io/meshctl/install | sh -
 export PATH=$HOME/.gloo-mesh/bin:$PATH
 ```
@@ -709,9 +709,9 @@ helm repo update
 kubectl --context ${MGMT} create ns gloo-mesh 
 helm upgrade --install gloo-mesh-enterprise gloo-mesh-enterprise/gloo-mesh-enterprise \
 --namespace gloo-mesh --kube-context ${MGMT} \
---version=2.1.3 \
+--version=2.2.0 \
 --values - <<EOF
-licenseKey: "${GLOO_MESH_LICENSE_KEY}"
+licenseSecretName: gloo-mesh-license
 global:
   cluster: mgmt
 mgmtClusterName: mgmt
@@ -827,7 +827,7 @@ helm upgrade --install gloo-mesh-agent gloo-mesh-agent/gloo-mesh-agent \
   --set rate-limiter.enabled=false \
   --set ext-auth-service.enabled=false \
   --set cluster=cluster1 \
-  --version 2.1.3
+  --version 2.2.0
 ```
 
 Note that the registration can also be performed using `meshctl cluster register`.
@@ -863,7 +863,7 @@ helm upgrade --install gloo-mesh-agent gloo-mesh-agent/gloo-mesh-agent \
   --set rate-limiter.enabled=false \
   --set ext-auth-service.enabled=false \
   --set cluster=cluster2 \
-  --version 2.1.3
+  --version 2.2.0
 ```
 
 You can check the cluster(s) have been registered correctly using the following commands:
@@ -938,7 +938,7 @@ helm upgrade --install gloo-mesh-agent-addons gloo-mesh-agent/gloo-mesh-agent \
   --set glooMeshAgent.enabled=false \
   --set rate-limiter.enabled=true \
   --set ext-auth-service.enabled=true \
-  --version 2.1.3
+  --version 2.2.0
 
 helm upgrade --install gloo-mesh-agent-addons gloo-mesh-agent/gloo-mesh-agent \
   --namespace gloo-mesh-addons \
@@ -946,7 +946,7 @@ helm upgrade --install gloo-mesh-agent-addons gloo-mesh-agent/gloo-mesh-agent \
   --set glooMeshAgent.enabled=false \
   --set rate-limiter.enabled=true \
   --set ext-auth-service.enabled=true \
-  --version 2.1.3
+  --version 2.2.0
 ```
 
 Finally, you need to specify which gateways you want to use for cross cluster traffic:
